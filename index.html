@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Video Editor</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --mut:#9aa3b2; --acc:#4f8cff; --ok:#2fbf71; --err:#ff5d5d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; padding:16px; }
+  .wrap { max-width:720px; margin:0 auto; }
+  h1 { font-size:22px; margin:8px 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:16px; margin:0 0 10px; }
+  .step { display:inline-block; background:var(--acc); color:#fff; border-radius:50%; width:22px; height:22px; text-align:center; line-height:22px; font-size:13px; margin-right:8px; }
+  input[type=file] { width:100%; padding:10px; background:#0f1115; border:1px dashed var(--line); border-radius:8px; color:var(--text); }
+  input[type=text] { width:100%; padding:9px; background:#0f1115; border:1px solid var(--line); border-radius:8px; color:var(--text); font-size:15px; }
+  video { width:100%; max-height:260px; border-radius:8px; background:#000; margin-top:10px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:140px; }
+  label { display:block; color:var(--mut); font-size:13px; margin-bottom:4px; }
+  .hint { color:var(--mut); font-size:13px; margin-top:6px; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:12px 16px; font-size:16px; cursor:pointer; width:100%; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.sec { background:#2a2f3a; width:auto; padding:6px 10px; font-size:13px; }
+  .clip { display:flex; align-items:center; gap:8px; padding:8px; border:1px solid var(--line); border-radius:8px; margin-top:8px; }
+  .clip .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .clip .time { width:150px; }
+  .bar { height:8px; background:#0f1115; border-radius:99px; overflow:hidden; margin-top:10px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--ok); transition:width .15s; }
+  #status { margin-top:8px; font-size:14px; color:var(--mut); white-space:pre-wrap; }
+  .err { color:var(--err) !important; }
+  a.dl { display:block; text-align:center; background:var(--ok); color:#fff; text-decoration:none; padding:12px; border-radius:8px; font-size:16px; margin-top:10px; }
+  .opt { display:flex; align-items:center; gap:8px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Quick Video Editor</h1>
+
+  <div class="card">
+    <h2><span class="step">1</span>Main video</h2>
+    <input type="file" id="mainFile" accept="video/*">
+    <video id="mainPreview" controls hidden></video>
+  </div>
+
+  <div class="card">
+    <h2><span class="step">2</span>Other clips <span style="color:var(--mut);font-weight:normal">(optional, added after the main video)</span></h2>
+    <input type="file" id="clipFiles" accept="video/*" multiple>
+    <div id="clipList"></div>
+    <div class="hint">Optionally set a time range per clip, e.g. <code>00:05 - 00:20</code>. Leave blank to use the whole clip.</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step">3</span>Crop main video</h2>
+    <div class="row">
+      <div><label>Start time (mm:ss or seconds)</label><input type="text" id="startT" placeholder="0:00"></div>
+      <div><label>End time (blank = until end)</label><input type="text" id="endT" placeholder="e.g. 1:30"></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="sec" id="setStart" type="button">Use current playback time as start</button>
+      <button class="sec" id="setEnd" type="button">Use current playback time as end</button>
+    </div>
+    <div class="opt">
+      <input type="checkbox" id="reenc">
+      <label for="reenc" style="margin:0;color:var(--text)">Frame-accurate mode (slower, re-encodes)</label>
+    </div>
+    <div class="hint">Default is fast mode: no re-encoding, so it finishes in seconds. Cuts snap to the nearest keyframe (can be off by a second or two).</div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step">4</span>Export</h2>
+    <button id="go" disabled>Loading editor engine…</button>
+    <div class="bar"><i id="bar"></i></div>
+    <div id="status"></div>
+    <div id="result"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const { FFmpeg } = FFmpegWASM;
+const { fetchFile, toBlobURL } = FFmpegUtil;
+const ffmpeg = new FFmpeg();
+let loaded = false, clips = [], outUrl = null;
+
+function setStatus(t, err){ $('status').textContent = t; $('status').classList.toggle('err', !!err); }
+function setBar(p){ $('bar').style.width = Math.max(0, Math.min(100, p*100)) + '%'; }
+
+function parseTime(s){
+  s = (s||'').trim(); if(!s) return null;
+  const parts = s.split(':').map(Number);
+  if(parts.some(isNaN)) return NaN;
+  return parts.reduce((a,v)=>a*60+v, 0);
+}
+function fmt(t){ const m=Math.floor(t/60), s=(t%60).toFixed(1); return m+':'+(s<10?'0':'')+s; }
+
+(async () => {
+  try {
+    const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+    ffmpeg.on('progress', ({progress}) => setBar(progress));
+    await ffmpeg.load({
+      classWorkerURL: await toBlobURL('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
+      coreURL: await toBlobURL(base + '/ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await toBlobURL(base + '/ffmpeg-core.wasm', 'application/wasm'),
+    });
+    loaded = true;
+    $('go').disabled = false;
+    $('go').textContent = 'Edit & export';
+  } catch (e) {
+    $('go').textContent = 'Engine failed to load';
+    setStatus('Could not load the editor engine (needs internet on first load): ' + e.message, true);
+  }
+})();
+
+$('mainFile').addEventListener('change', e => {
+  const f = e.target.files[0]; if(!f) return;
+  const v = $('mainPreview');
+  v.src = URL.createObjectURL(f); v.hidden = false;
+});
+$('setStart').onclick = () => { $('startT').value = fmt($('mainPreview').currentTime); };
+$('setEnd').onclick = () => { $('endT').value = fmt($('mainPreview').currentTime); };
+
+$('clipFiles').addEventListener('change', e => {
+  clips = [...e.target.files].map(f => ({ file: f, range: '' }));
+  renderClips();
+});
+function renderClips(){
+  const box = $('clipList'); box.innerHTML = '';
+  clips.forEach((c, i) => {
+    const d = document.createElement('div'); d.className = 'clip';
+    d.innerHTML = '<span class="name"></span><input class="time" type="text" placeholder="start - end">' +
+                  '<button class="sec" type="button">↑</button><button class="sec" type="button">✕</button>';
+    d.querySelector('.name').textContent = (i+1) + '. ' + c.file.name;
+    const inp = d.querySelector('input'); inp.value = c.range; inp.oninput = () => c.range = inp.value;
+    const [up, del] = d.querySelectorAll('button');
+    up.onclick = () => { if(i>0){ [clips[i-1], clips[i]] = [clips[i], clips[i-1]]; renderClips(); } };
+    del.onclick = () => { clips.splice(i,1); renderClips(); };
+    box.appendChild(d);
+  });
+}
+
+function ext(name){ const m = /\.([a-z0-9]+)$/i.exec(name); return m ? m[1].toLowerCase() : 'mp4'; }
+
+async function cutSegment(inName, outName, start, end, reencode){
+  const args = [];
+  if(start != null) args.push('-ss', String(start));
+  args.push('-i', inName);
+  if(end != null) args.push('-t', String(end - (start||0)));
+  if(reencode){
+    args.push('-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p',
+              '-vf','scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30',
+              '-c:a','aac','-ar','44100','-ac','2');
+  } else {
+    args.push('-c','copy','-avoid_negative_ts','make_zero');
+  }
+  args.push('-y', outName);
+  const code = await ffmpeg.exec(args);
+  if(code !== 0) throw new Error('ffmpeg failed on ' + inName);
+}
+
+async function run(reencode){
+  const mainF = $('mainFile').files[0];
+  const s = parseTime($('startT').value), e = parseTime($('endT').value);
+  if(Number.isNaN(s) || Number.isNaN(e)) throw new Error('Time format should look like 1:30 or 90.');
+  if(s != null && e != null && e <= s) throw new Error('End time must be after start time.');
+
+  const segs = [];
+  let n = 0;
+  const addSeg = async (file, start, end) => {
+    const inName = 'in' + n + '.' + ext(file.name);
+    const outName = 'seg' + n + '.' + (reencode ? 'mp4' : ext(file.name));
+    await ffmpeg.writeFile(inName, await fetchFile(file));
+    setStatus('Processing ' + file.name + '…');
+    await cutSegment(inName, outName, start, end, reencode);
+    await ffmpeg.deleteFile(inName);
+    segs.push(outName); n++;
+  };
+
+  await addSeg(mainF, s, e);
+  for(const c of clips){
+    let cs = null, ce = null;
+    if(c.range.trim()){
+      const p = c.range.split(/[-–]/);
+      cs = parseTime(p[0]); ce = p[1] != null ? parseTime(p[1]) : null;
+      if(Number.isNaN(cs) || Number.isNaN(ce)) throw new Error('Bad time range for ' + c.file.name);
+    }
+    await addSeg(c.file, cs, ce);
+  }
+
+  const outExt = reencode ? 'mp4' : ext(mainF.name);
+  const outName = 'final.' + outExt;
+  if(segs.length === 1){
+    await ffmpeg.rename(segs[0], outName);
+  } else {
+    setStatus('Joining clips…');
+    await ffmpeg.writeFile('list.txt', segs.map(x => "file '" + x + "'").join('\n'));
+    const code = await ffmpeg.exec(['-f','concat','-safe','0','-i','list.txt','-c','copy','-y', outName]);
+    if(code !== 0) throw new Error('Join failed');
+    for(const x of segs) await ffmpeg.deleteFile(x);
+    await ffmpeg.deleteFile('list.txt');
+  }
+  const data = await ffmpeg.readFile(outName);
+  await ffmpeg.deleteFile(outName);
+  return { data, outExt };
+}
+
+$('go').onclick = async () => {
+  if(!loaded) return;
+  if(!$('mainFile').files[0]){ setStatus('Please choose your main video first.', true); return; }
+  $('go').disabled = true; $('result').innerHTML = ''; setBar(0);
+  const t0 = performance.now();
+  try {
+    let res;
+    const forceReenc = $('reenc').checked;
+    try {
+      res = await run(forceReenc);
+    } catch (err) {
+      if(forceReenc) throw err;
+      setStatus('Clips have different formats — switching to compatible mode…');
+      res = await run(true);
+    }
+    if(outUrl) URL.revokeObjectURL(outUrl);
+    const type = res.outExt === 'mp4' ? 'video/mp4' : 'video/' + res.outExt;
+    outUrl = URL.createObjectURL(new Blob([res.data.buffer], { type }));
+    setBar(1);
+    setStatus('Done in ' + ((performance.now() - t0)/1000).toFixed(1) + ' s');
+    $('result').innerHTML = '<video controls src="' + outUrl + '"></video>' +
+      '<a class="dl" href="' + outUrl + '" download="edited-video.' + res.outExt + '">Download edited video</a>';
+  } catch (err) {
+    setStatus('Error: ' + err.message, true);
+  } finally {
+    $('go').disabled = false;
+  }
+};
+</script>
+</body>
+</html>
