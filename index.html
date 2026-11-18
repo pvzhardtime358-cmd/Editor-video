@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quick Video Editor</title>
 <style>
-  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --mut:#9aa3b2; --acc:#4f8cff; --ok:#2fbf71; --err:#ff5d5d; }
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --mut:#9aa3b2; --acc:#4f8cff; --ok:#2fbf71; --err:#ff5d5d; --crop:#ff7043; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; padding:16px; }
   .wrap { max-width:720px; margin:0 auto; }
@@ -15,23 +15,41 @@
   .step { display:inline-block; background:var(--acc); color:#fff; border-radius:50%; width:22px; height:22px; text-align:center; line-height:22px; font-size:13px; margin-right:8px; }
   input[type=file] { width:100%; padding:10px; background:#0f1115; border:1px dashed var(--line); border-radius:8px; color:var(--text); }
   input[type=text] { width:100%; padding:9px; background:#0f1115; border:1px solid var(--line); border-radius:8px; color:var(--text); font-size:15px; }
-  video { width:100%; max-height:260px; border-radius:8px; background:#000; margin-top:10px; }
+  video { width:100%; border-radius:8px; background:#000; display:block; }
   .row { display:flex; gap:10px; flex-wrap:wrap; }
   .row > div { flex:1; min-width:140px; }
   label { display:block; color:var(--mut); font-size:13px; margin-bottom:4px; }
   .hint { color:var(--mut); font-size:13px; margin-top:6px; }
   button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:12px 16px; font-size:16px; cursor:pointer; width:100%; }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  button.sec { background:#2a2f3a; width:auto; padding:6px 10px; font-size:13px; }
+  button.sec { background:#2a2f3a; width:auto; padding:7px 11px; font-size:13px; }
+  button.sec.on { background:var(--crop); }
   .clip { display:flex; align-items:center; gap:8px; padding:8px; border:1px solid var(--line); border-radius:8px; margin-top:8px; }
   .clip .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
-  .clip .time { width:150px; }
+  .clip .time { width:140px; }
   .bar { height:8px; background:#0f1115; border-radius:99px; overflow:hidden; margin-top:10px; }
   .bar > i { display:block; height:100%; width:0; background:var(--ok); transition:width .15s; }
   #status { margin-top:8px; font-size:14px; color:var(--mut); white-space:pre-wrap; }
   .err { color:var(--err) !important; }
   a.dl { display:block; text-align:center; background:var(--ok); color:#fff; text-decoration:none; padding:12px; border-radius:8px; font-size:16px; margin-top:10px; }
   .opt { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  .opt label { margin:0; color:var(--text); }
+
+  /* preview + crop overlay */
+  .stage { position:relative; overflow:hidden; border-radius:8px; margin-top:10px; touch-action:none; user-select:none; }
+  .cropbox { position:absolute; border:2px solid var(--crop); box-shadow:0 0 0 9999px rgba(0,0,0,.55); cursor:move; touch-action:none; }
+  .cropbox::before, .cropbox::after { content:""; position:absolute; pointer-events:none; }
+  .cropbox::before { left:33.33%; right:33.33%; top:0; bottom:0; border-left:1px solid rgba(255,112,67,.6); border-right:1px solid rgba(255,112,67,.6); }
+  .cropbox::after  { top:33.33%; bottom:33.33%; left:0; right:0; border-top:1px solid rgba(255,112,67,.6); border-bottom:1px solid rgba(255,112,67,.6); }
+  .h { position:absolute; width:26px; height:26px; background:var(--crop); border-radius:50%; border:2px solid #fff; z-index:2; }
+  .h.tl { left:-13px; top:-13px; cursor:nwse-resize; } .h.tr { right:-13px; top:-13px; cursor:nesw-resize; }
+  .h.bl { left:-13px; bottom:-13px; cursor:nesw-resize; } .h.br { right:-13px; bottom:-13px; cursor:nwse-resize; }
+  .player { display:flex; align-items:center; gap:10px; margin-top:8px; }
+  .player button { width:auto; padding:6px 14px; }
+  .player input[type=range] { flex:1; }
+  .player span { color:var(--mut); font-size:13px; min-width:92px; text-align:right; }
+  .ratios { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  #cropInfo { color:var(--mut); font-size:13px; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -41,31 +59,63 @@
   <div class="card">
     <h2><span class="step">1</span>Main video</h2>
     <input type="file" id="mainFile" accept="video/*">
-    <video id="mainPreview" controls hidden></video>
+    <div id="stage" class="stage" hidden>
+      <video id="mainPreview" playsinline preload="metadata"></video>
+      <div id="cropbox" class="cropbox" hidden>
+        <div class="h tl" data-c="tl"></div><div class="h tr" data-c="tr"></div>
+        <div class="h bl" data-c="bl"></div><div class="h br" data-c="br"></div>
+      </div>
+    </div>
+    <div class="player" id="player" hidden>
+      <button class="sec" id="playBtn" type="button">▶</button>
+      <input type="range" id="seek" min="0" max="1000" value="0">
+      <span id="timeLbl">0:00 / 0:00</span>
+    </div>
   </div>
 
   <div class="card">
     <h2><span class="step">2</span>Other clips <span style="color:var(--mut);font-weight:normal">(optional, added after the main video)</span></h2>
     <input type="file" id="clipFiles" accept="video/*" multiple>
     <div id="clipList"></div>
-    <div class="hint">Optionally set a time range per clip, e.g. <code>00:05 - 00:20</code>. Leave blank to use the whole clip.</div>
+    <div class="hint">Optionally set a time range per clip, e.g. <code>0:05 - 0:20</code>. Leave blank to use the whole clip.</div>
   </div>
 
   <div class="card">
-    <h2><span class="step">3</span>Crop main video</h2>
+    <h2><span class="step">3</span>Crop the main video</h2>
+
+    <label>Cut by time</label>
     <div class="row">
-      <div><label>Start time (mm:ss or seconds)</label><input type="text" id="startT" placeholder="0:00"></div>
-      <div><label>End time (blank = until end)</label><input type="text" id="endT" placeholder="e.g. 1:30"></div>
+      <div><label>Start (mm:ss or seconds)</label><input type="text" id="startT" placeholder="0:00"></div>
+      <div><label>End (blank = until end)</label><input type="text" id="endT" placeholder="e.g. 1:30"></div>
     </div>
     <div class="row" style="margin-top:8px">
-      <button class="sec" id="setStart" type="button">Use current playback time as start</button>
-      <button class="sec" id="setEnd" type="button">Use current playback time as end</button>
+      <button class="sec" id="setStart" type="button">Use current time as start</button>
+      <button class="sec" id="setEnd" type="button">Use current time as end</button>
     </div>
-    <div class="opt">
+
+    <div class="opt" style="margin-top:16px">
+      <input type="checkbox" id="cropOn">
+      <label for="cropOn">Crop the picture (remove part of the screen)</label>
+    </div>
+    <div id="cropTools" hidden>
+      <div class="ratios" id="ratios">
+        <button class="sec on" data-r="free" type="button">Free</button>
+        <button class="sec" data-r="1.7778" type="button">16:9</button>
+        <button class="sec" data-r="0.5625" type="button">9:16</button>
+        <button class="sec" data-r="1" type="button">1:1</button>
+        <button class="sec" data-r="1.3333" type="button">4:3</button>
+        <button class="sec" data-r="2" type="button">2:1</button>
+        <button class="sec" id="resetCrop" type="button">Reset</button>
+      </div>
+      <div id="cropInfo"></div>
+      <div class="hint">Drag the box to move it, drag the corner dots to resize. The crop applies to the part of the main video you selected with start/end time.</div>
+    </div>
+
+    <div class="opt" style="margin-top:12px">
       <input type="checkbox" id="reenc">
-      <label for="reenc" style="margin:0;color:var(--text)">Frame-accurate mode (slower, re-encodes)</label>
+      <label for="reenc">Frame-accurate cuts (slower, re-encodes)</label>
     </div>
-    <div class="hint">Default is fast mode: no re-encoding, so it finishes in seconds. Cuts snap to the nearest keyframe (can be off by a second or two).</div>
+    <div class="hint">Time-only cutting is fast (no re-encoding) but snaps to the nearest keyframe. Cropping the picture always re-encodes, using the fastest settings.</div>
   </div>
 
   <div class="card">
@@ -88,15 +138,17 @@ let loaded = false, clips = [], outUrl = null;
 
 function setStatus(t, err){ $('status').textContent = t; $('status').classList.toggle('err', !!err); }
 function setBar(p){ $('bar').style.width = Math.max(0, Math.min(100, p*100)) + '%'; }
-
 function parseTime(s){
   s = (s||'').trim(); if(!s) return null;
   const parts = s.split(':').map(Number);
   if(parts.some(isNaN)) return NaN;
   return parts.reduce((a,v)=>a*60+v, 0);
 }
-function fmt(t){ const m=Math.floor(t/60), s=(t%60).toFixed(1); return m+':'+(s<10?'0':'')+s; }
+function fmt(t){ t = t||0; const m=Math.floor(t/60), s=(t%60).toFixed(1); return m+':'+(s<10?'0':'')+s; }
+function ext(name){ const m = /\.([a-z0-9]+)$/i.exec(name); return m ? m[1].toLowerCase() : 'mp4'; }
+const even = n => Math.max(2, Math.round(n/2)*2);
 
+/* ---------- engine ---------- */
 (async () => {
   try {
     const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
@@ -106,29 +158,114 @@ function fmt(t){ const m=Math.floor(t/60), s=(t%60).toFixed(1); return m+':'+(s<
       coreURL: await toBlobURL(base + '/ffmpeg-core.js', 'text/javascript'),
       wasmURL: await toBlobURL(base + '/ffmpeg-core.wasm', 'application/wasm'),
     });
-    loaded = true;
-    $('go').disabled = false;
-    $('go').textContent = 'Edit & export';
+    loaded = true; $('go').disabled = false; $('go').textContent = 'Edit & export';
   } catch (e) {
     $('go').textContent = 'Engine failed to load';
     setStatus('Could not load the editor engine (needs internet on first load): ' + e.message, true);
   }
 })();
 
+/* ---------- main preview ---------- */
+const vid = $('mainPreview');
 $('mainFile').addEventListener('change', e => {
   const f = e.target.files[0]; if(!f) return;
-  const v = $('mainPreview');
-  v.src = URL.createObjectURL(f); v.hidden = false;
+  vid.src = URL.createObjectURL(f);
+  $('stage').hidden = false; $('player').hidden = false;
 });
-$('setStart').onclick = () => { $('startT').value = fmt($('mainPreview').currentTime); };
-$('setEnd').onclick = () => { $('endT').value = fmt($('mainPreview').currentTime); };
+vid.addEventListener('loadedmetadata', () => { resetCrop(); updateTime(); });
+vid.addEventListener('timeupdate', updateTime);
+vid.addEventListener('play', () => $('playBtn').textContent = '❚❚');
+vid.addEventListener('pause', () => $('playBtn').textContent = '▶');
+function updateTime(){
+  const d = vid.duration || 0;
+  $('timeLbl').textContent = fmt(vid.currentTime) + ' / ' + fmt(d);
+  if(d) $('seek').value = Math.round(vid.currentTime / d * 1000);
+}
+$('playBtn').onclick = () => vid.paused ? vid.play() : vid.pause();
+$('seek').oninput = () => { if(vid.duration) vid.currentTime = $('seek').value / 1000 * vid.duration; };
+$('setStart').onclick = () => { $('startT').value = fmt(vid.currentTime); };
+$('setEnd').onclick = () => { $('endT').value = fmt(vid.currentTime); };
 
+/* ---------- crop box (fractions of the video frame) ---------- */
+let crop = { x:0, y:0, w:1, h:1 };
+let ratio = null;               // pixel aspect ratio (w/h) or null for free
+const box = $('cropbox'), stage = $('stage');
+
+function drawCrop(){
+  box.style.left = crop.x*100 + '%'; box.style.top = crop.y*100 + '%';
+  box.style.width = crop.w*100 + '%'; box.style.height = crop.h*100 + '%';
+  const vw = vid.videoWidth||0, vh = vid.videoHeight||0;
+  $('cropInfo').textContent = vw ? ('Output size: ' + even(crop.w*vw) + ' × ' + even(crop.h*vh) + ' px') : '';
+}
+function resetCrop(){ crop = { x:0, y:0, w:1, h:1 }; applyRatio(ratio, true); }
+function applyRatio(r, keepFull){
+  ratio = r;
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  if(r && vw){
+    let wpx = vw, hpx = vw / r;
+    if(hpx > vh){ hpx = vh; wpx = vh * r; }
+    const f = keepFull ? 1 : 0.9;
+    crop.w = wpx*f/vw; crop.h = hpx*f/vh;
+    crop.x = (1 - crop.w)/2; crop.y = (1 - crop.h)/2;
+  } else if(keepFull){ crop = { x:0, y:0, w:1, h:1 }; }
+  drawCrop();
+}
+$('cropOn').onchange = () => {
+  const on = $('cropOn').checked;
+  box.hidden = !on; $('cropTools').hidden = !on;
+  if(on){ vid.pause(); drawCrop(); }
+};
+$('ratios').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  if(b.id === 'resetCrop'){ resetCrop(); return; }
+  [...$('ratios').querySelectorAll('button[data-r]')].forEach(x => x.classList.toggle('on', x === b));
+  applyRatio(b.dataset.r === 'free' ? null : parseFloat(b.dataset.r), false);
+});
+
+let drag = null;
+box.addEventListener('pointerdown', e => {
+  const h = e.target.dataset.c;
+  const rect = stage.getBoundingClientRect();
+  drag = { mode: h || 'move', rect, sx: e.clientX, sy: e.clientY, start: { ...crop } };
+  box.setPointerCapture(e.pointerId); e.preventDefault();
+});
+box.addEventListener('pointermove', e => {
+  if(!drag) return;
+  const { rect, start } = drag;
+  const px = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const py = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+  if(drag.mode === 'move'){
+    const dx = (e.clientX - drag.sx) / rect.width, dy = (e.clientY - drag.sy) / rect.height;
+    crop.x = Math.min(1 - start.w, Math.max(0, start.x + dx));
+    crop.y = Math.min(1 - start.h, Math.max(0, start.y + dy));
+  } else {
+    const c = drag.mode;                          // tl, tr, bl, br
+    const ax = (c[1] === 'r') ? start.x : start.x + start.w;   // opposite corner (anchor)
+    const ay = (c[0] === 'b') ? start.y : start.y + start.h;
+    const sx = (c[1] === 'r') ? 1 : -1, sy = (c[0] === 'b') ? 1 : -1;
+    let w = Math.max(0.05, (px - ax) * sx), h = Math.max(0.05, (py - ay) * sy);
+    const maxW = sx > 0 ? 1 - ax : ax, maxH = sy > 0 ? 1 - ay : ay;
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if(ratio){
+      h = w * vw / ratio / vh;
+      if(w > maxW){ w = maxW; h = w * vw / ratio / vh; }
+      if(h > maxH){ h = maxH; w = h * vh * ratio / vw; }
+    } else { w = Math.min(w, maxW); h = Math.min(h, maxH); }
+    crop.w = w; crop.h = h;
+    crop.x = sx > 0 ? ax : ax - w;
+    crop.y = sy > 0 ? ay : ay - h;
+  }
+  drawCrop();
+});
+['pointerup','pointercancel'].forEach(t => box.addEventListener(t, () => drag = null));
+
+/* ---------- other clips ---------- */
 $('clipFiles').addEventListener('change', e => {
   clips = [...e.target.files].map(f => ({ file: f, range: '' }));
   renderClips();
 });
 function renderClips(){
-  const box = $('clipList'); box.innerHTML = '';
+  const boxEl = $('clipList'); boxEl.innerHTML = '';
   clips.forEach((c, i) => {
     const d = document.createElement('div'); d.className = 'clip';
     d.innerHTML = '<span class="name"></span><input class="time" type="text" placeholder="start - end">' +
@@ -138,20 +275,22 @@ function renderClips(){
     const [up, del] = d.querySelectorAll('button');
     up.onclick = () => { if(i>0){ [clips[i-1], clips[i]] = [clips[i], clips[i-1]]; renderClips(); } };
     del.onclick = () => { clips.splice(i,1); renderClips(); };
-    box.appendChild(d);
+    boxEl.appendChild(d);
   });
 }
 
-function ext(name){ const m = /\.([a-z0-9]+)$/i.exec(name); return m ? m[1].toLowerCase() : 'mp4'; }
-
-async function cutSegment(inName, outName, start, end, reencode){
+/* ---------- processing ---------- */
+async function cutSegment(inName, outName, start, end, o){
   const args = [];
   if(start != null) args.push('-ss', String(start));
   args.push('-i', inName);
   if(end != null) args.push('-t', String(end - (start||0)));
-  if(reencode){
-    args.push('-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p',
-              '-vf','scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30',
+  if(o.reencode){
+    const W = o.W, H = o.H;
+    let vf = '';
+    if(o.cropFilter) vf += o.cropFilter + ',';
+    vf += 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30';
+    args.push('-vf', vf, '-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p',
               '-c:a','aac','-ar','44100','-ac','2');
   } else {
     args.push('-c','copy','-avoid_negative_ts','make_zero');
@@ -167,19 +306,30 @@ async function run(reencode){
   if(Number.isNaN(s) || Number.isNaN(e)) throw new Error('Time format should look like 1:30 or 90.');
   if(s != null && e != null && e <= s) throw new Error('End time must be after start time.');
 
-  const segs = [];
-  let n = 0;
-  const addSeg = async (file, start, end) => {
+  const vw = vid.videoWidth || 1280, vh = vid.videoHeight || 720;
+  const cropActive = $('cropOn').checked && (crop.w < 0.999 || crop.h < 0.999);
+  const o = { reencode, W: even(vw), H: even(vh), cropFilter: '' };
+  let mainCrop = '';
+  if(cropActive){
+    const cw = even(crop.w*vw), ch = even(crop.h*vh);
+    const cx = Math.min(Math.max(0, Math.round(crop.x*vw)), vw - cw);
+    const cy = Math.min(Math.max(0, Math.round(crop.y*vh)), vh - ch);
+    mainCrop = 'crop=' + cw + ':' + ch + ':' + cx + ':' + cy;
+    o.W = cw; o.H = ch;
+  }
+
+  const segs = []; let n = 0;
+  const addSeg = async (file, start, end, cropFilter) => {
     const inName = 'in' + n + '.' + ext(file.name);
     const outName = 'seg' + n + '.' + (reencode ? 'mp4' : ext(file.name));
     await ffmpeg.writeFile(inName, await fetchFile(file));
-    setStatus('Processing ' + file.name + '…');
-    await cutSegment(inName, outName, start, end, reencode);
+    setStatus('Processing ' + file.name + '…'); setBar(0);
+    await cutSegment(inName, outName, start, end, { ...o, cropFilter });
     await ffmpeg.deleteFile(inName);
     segs.push(outName); n++;
   };
 
-  await addSeg(mainF, s, e);
+  await addSeg(mainF, s, e, mainCrop);
   for(const c of clips){
     let cs = null, ce = null;
     if(c.range.trim()){
@@ -187,7 +337,7 @@ async function run(reencode){
       cs = parseTime(p[0]); ce = p[1] != null ? parseTime(p[1]) : null;
       if(Number.isNaN(cs) || Number.isNaN(ce)) throw new Error('Bad time range for ' + c.file.name);
     }
-    await addSeg(c.file, cs, ce);
+    await addSeg(c.file, cs, ce, '');
   }
 
   const outExt = reencode ? 'mp4' : ext(mainF.name);
@@ -213,11 +363,11 @@ $('go').onclick = async () => {
   $('go').disabled = true; $('result').innerHTML = ''; setBar(0);
   const t0 = performance.now();
   try {
+    const cropActive = $('cropOn').checked && (crop.w < 0.999 || crop.h < 0.999);
+    const forceReenc = $('reenc').checked || cropActive;
     let res;
-    const forceReenc = $('reenc').checked;
-    try {
-      res = await run(forceReenc);
-    } catch (err) {
+    try { res = await run(forceReenc); }
+    catch (err) {
       if(forceReenc) throw err;
       setStatus('Clips have different formats — switching to compatible mode…');
       res = await run(true);
@@ -227,7 +377,7 @@ $('go').onclick = async () => {
     outUrl = URL.createObjectURL(new Blob([res.data.buffer], { type }));
     setBar(1);
     setStatus('Done in ' + ((performance.now() - t0)/1000).toFixed(1) + ' s');
-    $('result').innerHTML = '<video controls src="' + outUrl + '"></video>' +
+    $('result').innerHTML = '<video controls playsinline src="' + outUrl + '" style="margin-top:10px"></video>' +
       '<a class="dl" href="' + outUrl + '" download="edited-video.' + res.outExt + '">Download edited video</a>';
   } catch (err) {
     setStatus('Error: ' + err.message, true);
