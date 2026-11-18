@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quick Video Editor</title>
 <style>
-  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --mut:#9aa3b2; --acc:#4f8cff; --ok:#2fbf71; --err:#ff5d5d; --crop:#ff7043; }
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --mut:#9aa3b2; --acc:#4f8cff; --ok:#2fbf71; --err:#ff5d5d; --crop:#22e06b; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; padding:16px; }
   .wrap { max-width:720px; margin:0 auto; }
@@ -37,10 +37,10 @@
 
   /* preview + crop overlay */
   .stage { position:relative; overflow:hidden; border-radius:8px; margin-top:10px; touch-action:none; user-select:none; }
-  .cropbox { position:absolute; border:2px solid var(--crop); box-shadow:0 0 0 9999px rgba(0,0,0,.55); cursor:move; touch-action:none; }
+  .cropbox { position:absolute; border:2px solid var(--crop); box-shadow:0 0 0 1px rgba(0,0,0,.6); cursor:move; touch-action:none; }
   .cropbox::before, .cropbox::after { content:""; position:absolute; pointer-events:none; }
-  .cropbox::before { left:33.33%; right:33.33%; top:0; bottom:0; border-left:1px solid rgba(255,112,67,.6); border-right:1px solid rgba(255,112,67,.6); }
-  .cropbox::after  { top:33.33%; bottom:33.33%; left:0; right:0; border-top:1px solid rgba(255,112,67,.6); border-bottom:1px solid rgba(255,112,67,.6); }
+  .cropbox::before { left:33.33%; right:33.33%; top:0; bottom:0; border-left:1px solid rgba(34,224,107,.7); border-right:1px solid rgba(34,224,107,.7); }
+  .cropbox::after  { top:33.33%; bottom:33.33%; left:0; right:0; border-top:1px solid rgba(34,224,107,.7); border-bottom:1px solid rgba(34,224,107,.7); }
   .h { position:absolute; width:26px; height:26px; background:var(--crop); border-radius:50%; border:2px solid #fff; z-index:2; }
   .h.tl { left:-13px; top:-13px; cursor:nwse-resize; } .h.tr { right:-13px; top:-13px; cursor:nesw-resize; }
   .h.bl { left:-13px; bottom:-13px; cursor:nesw-resize; } .h.br { right:-13px; bottom:-13px; cursor:nwse-resize; }
@@ -108,7 +108,22 @@
         <button class="sec" id="resetCrop" type="button">Reset</button>
       </div>
       <div id="cropInfo"></div>
-      <div class="hint">Drag the box to move it, drag the corner dots to resize. The crop applies to the part of the main video you selected with start/end time.</div>
+      <div class="row" style="margin-top:10px">
+        <div><label>Crop starts showing at</label><input type="text" id="cropStart" placeholder="e.g. 0:10"></div>
+        <div><label>Crop ends at</label><input type="text" id="cropEnd" placeholder="e.g. 0:40"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="sec" id="setCropStart" type="button">Use current time as crop start</button>
+        <button class="sec" id="setCropEnd" type="button">Use current time as crop end</button>
+      </div>
+      <div style="margin-top:10px">
+        <label>Cropped part inside the final video</label>
+        <select id="cropFit" style="width:100%;padding:9px;background:#0f1115;color:var(--text);border:1px solid var(--line);border-radius:8px;font-size:15px">
+          <option value="fill">Zoom to fill the screen</option>
+          <option value="fit">Fit with black bars</option>
+        </select>
+      </div>
+      <div class="hint">Drag the box to move it, drag the corner dots to resize. The crop is applied only between the two crop times; before and after, the full video is shown. Leave a time blank to crop from the beginning / until the end.</div>
     </div>
 
     <div class="opt" style="margin-top:12px">
@@ -185,6 +200,8 @@ $('playBtn').onclick = () => vid.paused ? vid.play() : vid.pause();
 $('seek').oninput = () => { if(vid.duration) vid.currentTime = $('seek').value / 1000 * vid.duration; };
 $('setStart').onclick = () => { $('startT').value = fmt(vid.currentTime); };
 $('setEnd').onclick = () => { $('endT').value = fmt(vid.currentTime); };
+$('setCropStart').onclick = () => { $('cropStart').value = fmt(vid.currentTime); };
+$('setCropEnd').onclick = () => { $('cropEnd').value = fmt(vid.currentTime); };
 
 /* ---------- crop box (fractions of the video frame) ---------- */
 let crop = { x:0, y:0, w:1, h:1 };
@@ -213,7 +230,7 @@ function applyRatio(r, keepFull){
 $('cropOn').onchange = () => {
   const on = $('cropOn').checked;
   box.hidden = !on; $('cropTools').hidden = !on;
-  if(on){ vid.pause(); drawCrop(); }
+  if(on){ drawCrop(); }
 };
 $('ratios').addEventListener('click', e => {
   const b = e.target.closest('button'); if(!b) return;
@@ -289,7 +306,8 @@ async function cutSegment(inName, outName, start, end, o){
     const W = o.W, H = o.H;
     let vf = '';
     if(o.cropFilter) vf += o.cropFilter + ',';
-    vf += 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30';
+    if(o.fill) vf += 'scale=' + W + ':' + H + ':force_original_aspect_ratio=increase,crop=' + W + ':' + H + ',setsar=1,fps=30';
+    else vf += 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30';
     args.push('-vf', vf, '-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p',
               '-c:a','aac','-ar','44100','-ac','2');
   } else {
@@ -308,28 +326,45 @@ async function run(reencode){
 
   const vw = vid.videoWidth || 1280, vh = vid.videoHeight || 720;
   const cropActive = $('cropOn').checked && (crop.w < 0.999 || crop.h < 0.999);
-  const o = { reencode, W: even(vw), H: even(vh), cropFilter: '' };
+  const o = { reencode, W: even(vw), H: even(vh), cropFilter: '', fill: false };
   let mainCrop = '';
   if(cropActive){
     const cw = even(crop.w*vw), ch = even(crop.h*vh);
     const cx = Math.min(Math.max(0, Math.round(crop.x*vw)), vw - cw);
     const cy = Math.min(Math.max(0, Math.round(crop.y*vh)), vh - ch);
     mainCrop = 'crop=' + cw + ':' + ch + ':' + cx + ':' + cy;
-    o.W = cw; o.H = ch;
   }
 
   const segs = []; let n = 0;
-  const addSeg = async (file, start, end, cropFilter) => {
-    const inName = 'in' + n + '.' + ext(file.name);
-    const outName = 'seg' + n + '.' + (reencode ? 'mp4' : ext(file.name));
-    await ffmpeg.writeFile(inName, await fetchFile(file));
-    setStatus('Processing ' + file.name + '…'); setBar(0);
-    await cutSegment(inName, outName, start, end, { ...o, cropFilter });
-    await ffmpeg.deleteFile(inName);
+  const runCut = async (inName, start, end, cropFilter, fill) => {
+    const outName = 'seg' + n + '.' + (reencode ? 'mp4' : ext(inName));
+    setStatus('Processing part ' + (n + 1) + '…'); setBar(0);
+    await cutSegment(inName, outName, start, end, { ...o, cropFilter, fill });
     segs.push(outName); n++;
   };
+  const addSeg = async (file, start, end, cropFilter, fill) => {
+    const inName = 'in' + n + '.' + ext(file.name);
+    await ffmpeg.writeFile(inName, await fetchFile(file));
+    await runCut(inName, start, end, cropFilter, fill);
+    await ffmpeg.deleteFile(inName);
+  };
 
-  await addSeg(mainF, s, e, mainCrop);
+  const mainIn = 'main.' + ext(mainF.name);
+  await ffmpeg.writeFile(mainIn, await fetchFile(mainF));
+  if(cropActive){
+    const lo = s != null ? s : 0, hi = e != null ? e : (vid.duration || 0);
+    let cs = parseTime($('cropStart').value), ce = parseTime($('cropEnd').value);
+    if(Number.isNaN(cs) || Number.isNaN(ce)) throw new Error('Crop times should look like 0:10 or 10.');
+    cs = Math.max(lo, cs != null ? cs : lo); ce = Math.min(hi, ce != null ? ce : hi);
+    if(ce <= cs) throw new Error('Crop end must be after crop start (and inside the start/end range of the video).');
+    const fill = $('cropFit').value === 'fill';
+    if(cs > lo + 0.05) await runCut(mainIn, lo, cs, '', false);       // full frame before the crop
+    await runCut(mainIn, cs, ce, mainCrop, fill);                       // cropped part
+    if(ce < hi - 0.05) await runCut(mainIn, ce, hi, '', false);        // full frame after the crop
+  } else {
+    await runCut(mainIn, s, e, '', false);
+  }
+  await ffmpeg.deleteFile(mainIn);
   for(const c of clips){
     let cs = null, ce = null;
     if(c.range.trim()){
@@ -337,7 +372,7 @@ async function run(reencode){
       cs = parseTime(p[0]); ce = p[1] != null ? parseTime(p[1]) : null;
       if(Number.isNaN(cs) || Number.isNaN(ce)) throw new Error('Bad time range for ' + c.file.name);
     }
-    await addSeg(c.file, cs, ce, '');
+    await addSeg(c.file, cs, ce, '', false);
   }
 
   const outExt = reencode ? 'mp4' : ext(mainF.name);
